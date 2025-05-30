@@ -1,0 +1,88 @@
+from plan.plan_base import *
+
+
+class PrefixSum2DBuild(Plan):
+    def __init__(self, input, sum_col_x, sum_col_y, target_col, agg_col):
+        super().__init__()
+        self.input = input
+        self.sum_col_x = sum_col_x
+        self.sum_col_y = sum_col_y
+        self.target_col = target_col
+        self.agg_col = agg_col
+        self.input.set_parent(Parent(self, "input"))
+
+    def find_nodes(self, cond):
+        found = self.input.find_nodes(cond)
+        if cond(self):
+            found.append(self)
+        return found
+
+    def find_exprs(self, cond):
+        found = self.input.find_exprs(cond)
+        found += self.sum_col_x.find_exprs(cond)
+        found += self.sum_col_y.find_exprs(cond)
+        found += self.target_col.find_exprs(cond)
+        found += self.agg_col.find_exprs(cond)
+        return found
+
+    def clone(self):
+        return PrefixSum2DBuild(self.input.clone(), self.sum_col_x.clone(), self.sum_col_y.clone(), self.target_col.clone(), self.agg_col.clone())
+
+    def bind(self, binding):
+        return PrefixSum2DBuild(self.input.bind(binding), self.sum_col_x.bind(binding), self.sum_col_y.bind(binding), self.target_col.bind(binding), self.agg_col.bind(binding))
+
+    def to_schema(self):
+        return [C("", self.sum_col_x.name),
+                C("", self.sum_col_y.name),
+                C("", self.target_col.name),
+                C("", self.agg_col.name)]
+
+    def to_cost(self, switchon):
+        input_cost, input_stat = self.input.cost(switchon)
+        avg_input_n_rows = input_stat.avg_card
+        upper_input_n_rows = input_stat.upper_card
+        avg_output_n_rows = self.safe_get_distinct(self.target_col.expr) or avg_input_n_rows
+        upper_output_n_rows = self.safe_get_distinct(self.target_col.expr) or upper_input_n_rows
+        input_n_cols = input_stat.n_cols
+        distinct_x = self.safe_get_distinct(self.sum_col_x.expr) or avg_input_n_rows
+        distinct_y = self.safe_get_distinct(self.sum_col_y.expr) or avg_input_n_rows
+        output_n_cols = distinct_x * distinct_y
+        input_n_string_cols = 0
+        output_n_string_cols = 0
+
+        column_info = {
+            "input_num_cols": input_n_cols,
+            "input_num_string_cols": input_n_string_cols,
+            "output_num_cols": output_n_cols,
+            "output_num_string_cols": output_n_string_cols
+        }
+
+        avg_latency = self.latency("PrefixSum2DBuild", avg_input_n_rows, avg_output_n_rows, column_info)
+        upper_latency = self.latency("PrefixSum2DBuild", upper_input_n_rows, upper_output_n_rows, column_info)
+        upper_latency = max(upper_latency, avg_latency)
+        mem = self.memory("PrefixSum2DBuild", upper_output_n_rows, column_info)
+
+        cost = Cost(avg_latency + input_cost.avg_latency, upper_latency + input_cost.upper_latency, mem)
+        stat = Statistics(avg_output_n_rows, upper_output_n_rows, output_n_cols)
+
+        return cost, stat
+
+    def to_str(self):
+        return f"PrefixSum2DBuild[{self.cost(False)[0].upper_latency}]({self.sum_col_x}, {self.sum_col_y}, {self.target_col}, {self.agg_col})\n|\n" + str(self.input)
+
+    def to_functional_str(self):
+        return f"PrefixSum2DBuild({self.sum_col_x}, {self.sum_col_y}, {self.target_col}, {self.agg_col})" + self.input.functional_str()
+
+    def to_hash(self):
+        return hash(("PrefixSum2DBuild", hash(self.input), str(self.sum_col_x), str(self.sum_col_y), str(self.target_col), str(self.agg_col)))
+
+    def to_json(self):
+        return {
+            "id": self.id,
+            "type": "PrefixSum2DBuild",
+            "input": self.input.to_json(),
+            "sum_col_x": self.sum_col_x.to_json(),
+            "sum_col_y": self.sum_col_y.to_json(),
+            "target_col": self.target_col.to_json(),
+            "agg_col": self.agg_col.to_json()
+        }

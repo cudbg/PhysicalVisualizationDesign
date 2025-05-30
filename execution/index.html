@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>PVD Experiment</title>
+    <style>
+        .controls { margin-bottom: 40px; }
+        .text-areas-container { display: flex; }
+        .text-area {
+            height: 400px;
+            margin-right: 20px;
+            margin-top: 20px;
+            margin-bottom: 20px;
+        }
+        #plan { width: 400px; }
+        #log { width: 800px; }
+
+        table, th, td {
+            border: 1px solid black;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/apache-arrow"></script>
+
+    <!-- Load the PVD WebAssembly module -->
+    <script src="build_wasm/pvd_wasm.js"></script>
+    <script>
+      Module.onRuntimeInitialized = () => { 
+        document.getElementById("connection-status").innerHTML = "Loaded";
+      };
+    </script>
+
+    <!-- Tasks -->
+    <script>
+
+      var all_tasks = {};
+
+      function register_tasks(name, plans, values, tasks) {
+        all_tasks[name] = {
+          plans: plans,
+          values: values,
+          tasks: tasks
+        };
+      }
+    </script>
+
+    <!-- Load Tasks -->
+    <script src="plans/covid.js"></script>
+    <script src="plans/sdss.js"></script>
+    <script src="plans/flights.js"></script>
+    <script src="plans/brightkite.js"></script>
+    <script src="plans/liquor.js"></script>
+
+  </head>
+  <body>
+    Port: <input type="text" id="port"></body><button id="connect" onclick="connect()">Connect</button>
+    <p id="connection-status">Unconnected</p>
+
+    <!-- Select one test to run -->
+    <div id="test-selection" class="consoles">
+        <select id="selectTest"></select>
+        <button id="run">Run</button>
+        <button id="run-all">Run All</button>
+    </div>
+
+    <div id="display" class="text-areas-container">
+        <textarea id="plan" class="text-area" placeholder="Left Text Area"></textarea>
+        <textarea id="log" class="text-area" placeholder="Right Text Area"></textarea>
+    </div>
+
+    <table id="statistics">
+        <thead>
+            <tr>
+                <th>Task Name</th>
+                <th>First Run</th>
+                <th>Time Exec</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Rows will be dynamically added here -->
+        </tbody>
+    </table>
+
+    <script>
+        function connect() {
+            var port = document.getElementById("port").value;
+            Module.init(port, (state) => {
+                console.log(state);
+                var status = document.getElementById("connection-status");
+                status.innerHTML = state;
+            });
+        }
+
+        var stat = {};
+
+        const testDropdown = document.getElementById('selectTest');
+        var sortedTests = [];
+        for (var task in all_tasks) {
+          for (var task_case in all_tasks[task].tasks) {
+            const name = task + "&" + task_case;
+            const option = document.createElement('option');
+            option.value = name;
+            option.text = name;
+            testDropdown.add(option);
+            stat[name] = { "first": [], "following": [] }
+            sortedTests.push(name);
+          }
+        }
+
+        function updateTable() {
+            var table = document.getElementById('statistics').getElementsByTagName('tbody')[0];
+            table.innerHTML = '';
+
+            sortedTests.forEach((test) => {
+                const testStat = stat[test];
+
+                for (var i = 0; i < testStat.first.length; i++) {
+                    var row = table.insertRow();
+                    row.insertCell(0).textContent = test;
+                    row.insertCell(1).textContent = "true";
+                    row.insertCell(2).textContent = testStat.first[i];
+                }
+
+                for (var i = 0; i < testStat.following.length; i++) {
+                    var row = table.insertRow();
+                    row.insertCell(0).textContent = test;
+                    row.insertCell(1).textContent = "false";
+                    row.insertCell(2).textContent = testStat.following[i];
+                }
+            });
+        }
+
+        function random_binding(values, binding=null, iact=null) {
+            function random_select(array) {
+                return array[Math.floor(Math.random() * array.length)];
+            }
+            if (binding === null) {
+                binding = {};
+                for (var item in values) {
+                    binding[item] = random_select(values[item]);
+                }
+                for (var item in values) {
+                  if (item.includes("lower")) {
+                    var upper = item.replace("lower", "upper");
+                    if (upper in values) {
+                      if (binding[item].value > binding[upper].value) {
+                        var temp = binding[item];
+                        binding[item] = binding[upper];
+                        binding[upper] = temp;
+                      }
+                    }
+                  }
+                }
+            }
+            else {
+              for (var item in iact) {
+                var choice = iact[item];
+                if (Array.isArray(choice)) {
+		  var lower = { ...random_select(values[choice[0]])};
+		  var upper = { ...random_select(values[choice[1]])};
+                  if (lower.value > upper.value) {
+                      var temp = lower;
+                      lower = upper;
+                      upper = temp;
+                  }
+                  if (choice[0].includes("ra") || choice[0].includes("dec")) {
+                    var l = lower.value
+                    var r = upper.value
+                    for (var i = 0; i < 4; i++) {
+                      var m = (l + r) / 2;
+                      if (Math.random() < 0.5) {
+                        l = m;
+                      }
+                      else {
+                        r = m;
+                      }
+                    }
+                    lower.value = l;
+                    upper.value = r;
+                  }
+                  binding[choice[0]] = lower;
+                  binding[choice[1]] = upper;
+                }
+                else {
+                  var value = random_select(values[choice]);
+                  binding[choice] = value;
+                }
+              }
+            }
+            return binding;
+        }
+
+        var run_test_idx = 0;
+        var run_all = false;
+
+        function run_test(test) {
+            if (run_all) test = sortedTests[run_test_idx];
+
+            const task = test.split("&")[0];
+            const task_case = test.split("&")[1];
+
+            var plan = all_tasks[task].plans[task_case];
+            var values = all_tasks[task].values;
+            var iact = all_tasks[task].tasks[task_case];
+
+            var now = Date.now();
+
+            Module.register(JSON.stringify(plan), (plan_str) => {
+                document.getElementById("plan").value = plan_str;
+
+                var status = document.getElementById("log");
+                status.value += "Test " + test + " loaded " + " with " + (Date.now() - now) + "ms + \n";
+
+                const max_test_rounds = 20;
+
+                var test_rounds = max_test_rounds;
+                var binding = random_binding(values);
+                binding = random_binding(values, binding, iact);
+                var switch_on = true;
+
+                now = Date.now();
+
+                var table_callback = (ptr, size) => {
+                    var table_array = Module.HEAPU8.slice(ptr, ptr + size);
+                    var table = Arrow.tableFromIPC(table_array);
+                    var time = Date.now() - now;
+                    console.log("received table:");
+                    var fields = table.schema.fields;
+                    for (var i = 0; i < fields.length; i++) {
+                        console.log(fields[i].name, fields[i].type, table.getChildAt(i).toArray());
+                    }
+                    if (switch_on) {
+                        stat[test].first.push(time);
+                    } else {
+                        stat[test].following.push(time);
+                    }
+                    var status = document.getElementById("log");
+                    status += "Binding: " + JSON.stringify(binding) + "\n";
+                    status += "Runtime " + time + "ms\n";
+                    updateTable();
+
+                    test_rounds -= 1;
+                    if (test_rounds % 5 == 0) {
+                        binding = random_binding(values);
+                	binding = random_binding(values, binding, iact);
+                        switch_on = true;
+                    }
+                    else {
+                        binding = random_binding(values, binding, iact);
+                        switch_on = false;
+                    }
+
+                    if (test_rounds > 0) {
+                        now = Date.now();
+                        Module.execute(plan.id, JSON.stringify(binding), table_callback);
+                    }
+                    else if (run_all && run_test_idx < sortedTests.length - 1) {
+                        run_test_idx += 1;
+                        run_test(sortedTests[run_test_idx]);
+                    }
+                    else {
+                      var status = document.getElementById("connection-status");
+                      status.innerHTML = "Complete";
+                    }
+                }
+
+                Module.execute(plan.id, JSON.stringify(binding), table_callback);
+            });
+        }
+
+        document.getElementById('run').addEventListener('click', () => {
+            const test = testDropdown.value;
+            run_all = false;
+            run_test(test);
+        });
+        document.getElementById('run-all').addEventListener('click', () => {
+          run_all = true;
+          run_test_idx = 0;
+          run_test(sortedTests[run_test_idx]);
+        });
+    </script>
+
+  </body>
+</html>
